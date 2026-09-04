@@ -1,0 +1,54 @@
+name: Lỗi (bug)
+description: Một hành vi sai so với mong đợi.
+title: "[Lỗi] "
+labels: ["stage:triage", "type:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Chuyện gì đã xảy ra
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Mong đợi điều gì
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Cách tái hiện
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: env
+    attributes:
+      label: Môi trường
+      multiple: true
+      options:
+        - local
+        - staging
+        - production
+        - web
+        - mobile (Flutter)
+        - Codi / AI
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Mức độ
+      options:
+        - Sai số tiền / mất dữ liệu / lộ dữ liệu
+        - Chặn luồng chính
+        - Khó chịu nhưng có cách khác
+        - Cosmetic
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log / ảnh chụp
+      description: Không dán dữ liệu cá nhân, số tài khoản, token. Che trước khi dán.

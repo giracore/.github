@@ -1,0 +1,42 @@
+name: Đề xuất quyết định (ADR)
+description: Một quyết định kiến trúc hoặc sản phẩm cần chốt. Kết quả là một ADR trong repo governance.
+title: "[ADR] "
+labels: ["stage:council", "type:decision"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Bối cảnh (Context)
+      description: Lực nào buộc phải quyết bây giờ. Sự thật, ràng buộc, bằng chứng. Chưa nói giải pháp.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Các lựa chọn (Options)
+      description: Ít nhất hai lựa chọn thật, cộng "không làm gì".
+      placeholder: |
+        1. ...
+        2. ...
+        3. Không làm gì
+    validations:
+      required: true
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Khuyến nghị và lý do
+  - type: textarea
+    id: constitution
+    attributes:
+      label: Điều nào trong hiến pháp / ADR nào bị đụng
+      placeholder: "Const. 2.2, ADR-027"
+  - type: dropdown
+    id: reversibility
+    attributes:
+      label: Đảo ngược được không
+      options:
+        - Dễ đảo ngược
+        - Đảo ngược tốn kém
+        - Không đảo ngược được
+    validations:
+      required: true

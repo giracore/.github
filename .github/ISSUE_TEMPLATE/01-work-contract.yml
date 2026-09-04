@@ -1,0 +1,84 @@
+name: Hợp đồng làm việc (feature / thay đổi)
+description: Mô tả một vấn đề cần giải quyết. Không có hợp đồng thì không có code (Hiến pháp 5.1).
+title: "[Đề xuất] "
+labels: ["stage:triage", "type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Viết để người đọc 30 giây là hiểu. Phần **Human notes** là tri thức đời sống mà AI không có, đừng bỏ trống.
+        Hội đồng agent sẽ đọc issue này, tạo bề mặt đánh đổi (option, hệ quả, rủi ro) và escalate những gì cần người quyết.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vấn đề (Problem)
+      description: Ai đang gặp chuyện gì, trong tình huống nào. Chưa nói giải pháp.
+    validations:
+      required: true
+  - type: textarea
+    id: story
+    attributes:
+      label: User story
+      placeholder: "Là <ai>, tôi muốn <gì>, để <được gì>."
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Bằng chứng (Why)
+      description: Ai cần? Dữ liệu, quan sát hay phản hồi nào? Không làm thì sao? Có cách đơn giản hơn không? "Không làm" là kết quả hợp lệ (Hiến pháp 3.1).
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Ràng buộc (Constraints)
+      placeholder: |
+        - Tiếng Việt trước
+        - Dữ liệu tài chính là nhạy cảm
+        - Phải chạy được trên mobile
+  - type: textarea
+    id: questions
+    attributes:
+      label: Câu hỏi mở (Questions)
+      description: Điều chưa biết. Hội đồng sẽ trả lời hoặc escalate cho người.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Tiêu chí chấp nhận (Acceptance criteria)
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: human_notes
+    attributes:
+      label: Human notes
+      description: Ngữ cảnh đời sống, văn hoá, ưu tiên, ví dụ thật. Ví dụ "người dùng nói mập mờ kiểu trưa ăn cơm hết 80k".
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Đụng đến
+      description: Chọn tất cả những gì áp dụng. Dùng để gọi đúng agent review.
+      multiple: true
+      options:
+        - Tiền thật / số dư
+        - Dữ liệu cá nhân / PII / gửi ra bên thứ ba
+        - API contract (mobile tiêu thụ độc lập)
+        - Database migration
+        - Chỉ UI
+        - Chỉ nội bộ / hạ tầng
+  - type: dropdown
+    id: repos
+    attributes:
+      label: Repo liên quan
+      multiple: true
+      options:
+        - finance-api
+        - finance-ai
+        - finance-web
+        - finance-app
+        - finance-ops
+        - landing
+        - governance

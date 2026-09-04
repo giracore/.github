@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Hiến pháp và ADR (governance)
+    url: https://github.com/giracore/governance
+    about: Đọc CONSTITUTION.md và decisions/ trước khi đề xuất. Thay đổi kiến trúc lớn là một ADR mới trong repo governance.
