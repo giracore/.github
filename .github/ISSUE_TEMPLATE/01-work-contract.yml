@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Viết để người đọc 30 giây là hiểu. Phần **Human notes** là tri thức đời sống mà AI không có, đừng bỏ trống.
-        Hội đồng agent sẽ đọc issue này, tạo bề mặt đánh đổi (option, hệ quả, rủi ro) và escalate những gì cần người quyết.
+        Issue mới nằm ở `stage:triage`. Khi chuyển sang `stage:council`, hội đồng agent sẽ đọc issue, tạo bề mặt đánh đổi (option, hệ quả, rủi ro) và escalate những gì cần người quyết. Xem luồng label ở README của giracore/.github.
   - type: textarea
     id: problem
     attributes:
