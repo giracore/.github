@@ -1,0 +1,15 @@
+#!/bin/sh
+# ADR-039: environment branches move only through the Promote workflow.
+# Copy into a repo as .githooks/pre-push and enable once per clone:
+#   git config core.hooksPath .githooks
+# Skip in a real emergency with: git push --no-verify (and tell the team).
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/stg|refs/heads/main)
+      branch=${remote_ref#refs/heads/}
+      echo "✋ Không push thẳng vào '$branch'. Merge vào 'dev' rồi chạy workflow Promote trên GitHub (ADR-039)." >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0

@@ -1,0 +1,111 @@
+name: Promote (reusable)
+
+# ADR-039 promotion: dev -> stg, stg -> main. Fast-forward only, then tag the
+# promoted commit and start that environment's deploy.
+#
+# Called from each service repo by a small workflow_dispatch stub:
+#
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         target: { type: choice, options: [stg, main], required: true }
+#         bump:   { type: choice, options: [patch, minor, major], default: patch }
+#   jobs:
+#     promote:
+#       uses: giracore/.github/.github/workflows/promote.yml@main
+#       with: { target: ${{ inputs.target }}, bump: ${{ inputs.bump }}, deploy_workflow: deploy-env.yml }
+#       permissions: { contents: write, actions: write }
+#
+# A tag pushed with GITHUB_TOKEN starts no workflow on its own, so this
+# workflow starts the deploy explicitly (workflow_dispatch is the exception
+# GitHub allows). The deploy then checks that the tag came from here.
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: "stg (from dev) or main (from stg)"
+        type: string
+        required: true
+      bump:
+        description: "patch, minor or major"
+        type: string
+        default: patch
+      deploy_workflow:
+        description: "Workflow file in the calling repo that deploys a tag (empty = tag only)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward, tag, deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.target }}
+          BUMP: ${{ inputs.bump }}
+          DEPLOY_WORKFLOW: ${{ inputs.deploy_workflow }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            stg)  SOURCE=dev; PREFIX=stg_v ;;
+            main) SOURCE=stg; PREFIX=prod_v ;;
+            *) echo "target must be stg or main" >&2; exit 1 ;;
+          esac
+          case "$BUMP" in patch|minor|major) ;; *) echo "bump must be patch, minor or major" >&2; exit 1 ;; esac
+
+          git fetch --tags --force origin
+          src=$(git rev-parse "origin/$SOURCE")
+          dst=$(git rev-parse "origin/$TARGET")
+          if [ "$src" = "$dst" ]; then
+            echo "$TARGET is already at $SOURCE ($src); nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$dst" "$src"; then
+            {
+              echo "❌ $TARGET has commits that are not on $SOURCE, so it cannot fast-forward."
+              echo
+              echo "Someone pushed to $TARGET directly. Bring those commits into $SOURCE first (merge $TARGET into $SOURCE via a PR), then promote again."
+              echo
+              git log --oneline "$src..$dst"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Next version from the highest existing tag with this prefix.
+          last=$(git tag --list "${PREFIX}*" | sed "s/^${PREFIX}//" | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)
+          last=${last:-0.0.0}
+          IFS=. read -r major minor patch <<< "$last"
+          case "$BUMP" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          tag="${PREFIX}${major}.${minor}.${patch}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git push origin "$src:refs/heads/$TARGET"
+          git tag -a "$tag" "$src" -m "Promoted $SOURCE -> $TARGET by @$ACTOR at $(date -u +%FT%TZ) (ADR-039)"
+          git push origin "refs/tags/$tag"
+
+          {
+            echo "✅ $TARGET fast-forwarded to \`${src:0:7}\` and tagged **$tag** (by @$ACTOR)."
+            echo
+            git log --oneline "$dst..$src"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$DEPLOY_WORKFLOW" ]; then
+            gh workflow run "$DEPLOY_WORKFLOW" --ref "$tag" -f tag="$tag"
+            echo "Deploy started: $DEPLOY_WORKFLOW for $tag" >> "$GITHUB_STEP_SUMMARY"
+          fi

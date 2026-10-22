@@ -1,0 +1,87 @@
+name: Branch guard (reusable)
+
+# ADR-039: GitHub Free has no branch protection for private repos, so the
+# environment branches are checked after the fact instead. Called on every
+# push to stg/main and once a day. Opens (or updates) one issue labelled
+# `escalate` when:
+#   - main is not an ancestor of stg, or stg is not an ancestor of dev
+#     (someone committed straight to an environment branch), or
+#   - the head of stg/main carries no tag made by the promote workflow.
+# Deploys already refuse such commits (they only trust promote's tags); this
+# makes sure a human hears about it.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check environment branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          git fetch --tags --force origin
+          problems=""
+          has() { git rev-parse --verify --quiet "origin/$1" >/dev/null; }
+
+          check_chain() { # $1 must be an ancestor of $2
+            if has "$1" && has "$2" && ! git merge-base --is-ancestor "origin/$1" "origin/$2"; then
+              problems+="- \`$1\` has commits that are not on \`$2\`:"$'\n'
+              problems+=$(git log --format='  - `%h` %s (%an)' "origin/$2..origin/$1")$'\n'
+            fi
+          }
+          check_chain stg dev
+          check_chain main stg
+
+          check_tagged() { # $1 branch, $2 tag prefix
+            has "$1" || return 0
+            head=$(git rev-parse "origin/$1")
+            # A branch nobody promoted to yet still points at the starting commit.
+            [ -z "$(git tag --list "$2*")" ] && return 0
+            ok=""
+            for t in $(git tag --points-at "$head" --list "$2*"); do
+              tagger=$(git for-each-ref --format='%(taggername)' "refs/tags/$t")
+              [ "$tagger" = "github-actions[bot]" ] && ok=1
+            done
+            [ -n "$ok" ] || problems+="- head of \`$1\` (\`${head:0:7}\`) has no \`$2*\` tag from the promote workflow: it was pushed by hand."$'\n'
+          }
+          check_tagged stg stg_v
+          check_tagged main prod_v
+
+          title="Branch guard: environment branches out of line"
+          existing=$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" --json number -q '.[0].number')
+          if [ -z "$problems" ]; then
+            echo "✅ dev ⊇ stg ⊇ main, heads promoted by the workflow." >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" -R "$REPO" --comment "Back in line as of $(date -u +%FT%TZ)." --reason completed
+            fi
+            exit 0
+          fi
+
+          body="ADR-039 check found commits that did not go through \`dev\` → promote:
+
+          $problems
+          **Nothing was deployed from them**: deploys only accept tags made by the promote workflow.
+
+          **Fix:** open a PR from the affected branch into \`dev\`, merge it, then run *Promote* again. Do not force-push.
+
+          _Run: ${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}_"
+          gh label create escalate -R "$REPO" --color B60205 2>/dev/null || true
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$REPO" --body "$body"
+          else
+            gh issue create -R "$REPO" --title "$title" --label escalate --body "$body"
+          fi
+          echo "$problems" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
