@@ -3,6 +3,12 @@ name: Promote (reusable)
 # ADR-039 promotion: dev -> stg, stg -> main. Fast-forward only, then tag the
 # promoted commit and start that environment's deploy.
 #
+# dev -> stg first squashes everything on dev since stg into ONE release commit
+# (ADR-041 rule 9) and force-pushes dev to it (with a lease, so a merge landing
+# mid-promote aborts instead of being lost). The release commit names everyone
+# else who authored a squashed commit as Co-authored-by, so their work stays
+# attributed on stg and main. Open PRs into dev need a rebase afterwards.
+#
 # Called from each service repo by a small workflow_dispatch stub:
 #
 #   on:
@@ -95,14 +101,45 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          squashed=""
+          if [ "$TARGET" = stg ] && [ "$(git rev-list --count "$dst..$src")" -gt 1 ]; then
+            # Authors by GitHub login where GitHub knows them; the person
+            # promoting is the release commit's author, bots are dropped.
+            actor_json=$(gh api "users/$ACTOR")
+            actor_name=$(jq -r '.name // .login' <<< "$actor_json")
+            actor_email="$(jq -r .id <<< "$actor_json")+${ACTOR}@users.noreply.github.com"
+            coauthors=$(
+              gh api "repos/$GITHUB_REPOSITORY/compare/$dst...$src" --paginate \
+                --jq '.commits[] | select((.author.login // "") != env.ACTOR) | select(((.author.login // "") | test("\\[bot\\]$")) | not) | "\(.commit.author.name) <\(.commit.author.email)>"'
+              git log --format=%B "$dst..$src" | sed -n 's/^Co-authored-by: *//Ip'
+            )
+            coauthors=$(printf '%s\n' "$coauthors" | grep -v -i -e '\[bot\]' -e "<.*${ACTOR}@users.noreply.github.com>" | awk 'NF && !seen[tolower($0)]++' || true)
+            msg=$(
+              echo "Release ${tag#"$PREFIX"}"
+              echo
+              git log --reverse --format='- %s' "$dst..$src"
+              if [ -n "$coauthors" ]; then
+                echo
+                printf '%s\n' "$coauthors" | sed 's/^/Co-authored-by: /'
+              fi
+            )
+            release=$(GIT_AUTHOR_NAME="$actor_name" GIT_AUTHOR_EMAIL="$actor_email" \
+              git commit-tree "$src^{tree}" -p "$dst" -m "$msg")
+            # Lease on dev: a merge that lands while this runs makes the push fail.
+            git push --force-with-lease="refs/heads/$SOURCE:$src" origin "$release:refs/heads/$SOURCE"
+            squashed=" (squashed $(git rev-list --count "$dst..$src") commits from ${src:0:7})"
+            src=$release
+          fi
+
           git push origin "$src:refs/heads/$TARGET"
           git tag -a "$tag" "$src" -m "Promoted $SOURCE -> $TARGET by @$ACTOR at $(date -u +%FT%TZ) (ADR-039)"
           git push origin "refs/tags/$tag"
 
           {
-            echo "✅ $TARGET fast-forwarded to \`${src:0:7}\` and tagged **$tag** (by @$ACTOR)."
+            echo "✅ $TARGET fast-forwarded to \`${src:0:7}\`$squashed and tagged **$tag** (by @$ACTOR)."
             echo
-            git log --oneline "$dst..$src"
+            git log --format=%B -1 "$src"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "$DEPLOY_WORKFLOW" ]; then
