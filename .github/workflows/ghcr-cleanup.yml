@@ -1,0 +1,167 @@
+name: Cleanup ghcr.io versions (reusable)
+
+# Deletes the versions of ONE ghcr.io/giracore container package that nothing
+# uses any more. Called weekly from each service repo (finance-api, finance-ai,
+# finance-web) with its own package name, so each repo's GITHUB_TOKEN only ever
+# touches the package linked to it: no package settings, no PAT.
+#
+# Caller stub:
+#
+#   on:
+#     schedule: [{ cron: '0 3 * * 0' }]   # deletes for real
+#     workflow_dispatch:
+#       inputs: { dry_run: { type: boolean, default: true } }
+#   jobs:
+#     cleanup:
+#       uses: giracore/.github/.github/workflows/ghcr-cleanup.yml@main
+#       with:
+#         package: finance-api
+#         dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+#       permissions: { contents: read, packages: write }
+#
+# Replaces finance-ops #30's org-wide copy, which needed finance-ops to hold
+# the Admin role on every package, and before that the per-repo cleanup that
+# used actions/delete-package-versions "delete untagged": on ghcr the
+# platform manifest (linux/amd64) and the attestation of every image are
+# untagged versions of their own, referenced only from the tagged index, and it
+# deleted them (stg_v0.1.0 and latest of finance-api/finance-ai were left
+# pointing at nothing).
+#
+# KEEP:
+#   1. every version with a tag matching protected_tags (dev, latest, stg_v*,
+#      prod_v*): the running images and the release rollback targets;
+#   2. the keep_recent most recent tagged versions (recent dev builds);
+#   3. every version younger than keep_hours, tagged or not (a build in flight
+#      pushes children before its index);
+#   4. every manifest that a kept version references (manifests[] of an index,
+#      followed down nested indexes): platform images and attestations.
+# Everything else is deleted.
+#
+# Fail-safe: if the manifest of any version from 1-3 cannot be read, nothing in
+# the package is deleted. A missing CHILD of a kept index (an image the old
+# cleanup already broke) is only reported.
+#
+# GitHub-hosted on purpose: this token can delete packages, and the ROG runner
+# only ever gets read tokens.
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: "Container package under ghcr.io/giracore, e.g. finance-api"
+        type: string
+        required: true
+      dry_run:
+        description: "Only list what would be deleted"
+        type: boolean
+        default: true
+      protected_tags:
+        type: string
+        default: '^(dev|latest|stg_v.*|prod_v.*)$'
+      keep_recent:
+        type: number
+        default: 10
+      keep_hours:
+        type: number
+        default: 48
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ghcr-cleanup-${{ inputs.package }}
+      cancel-in-progress: false
+    steps:
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Delete versions nothing uses
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGES: ${{ inputs.package }}
+          PROTECTED_TAGS: ${{ inputs.protected_tags }}
+          KEEP_RECENT: ${{ inputs.keep_recent }}
+          KEEP_HOURS: ${{ inputs.keep_hours }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: |
+          set -euo pipefail
+
+          ORG=${ORG:-giracore}
+          PACKAGES=${PACKAGES:?}
+          PROTECTED_TAGS=${PROTECTED_TAGS:-'^(dev|latest|stg_v.*|prod_v.*)$'}
+          KEEP_RECENT=${KEEP_RECENT:-10}
+          KEEP_HOURS=${KEEP_HOURS:-48}
+
+          DRY_RUN=${DRY_RUN:-0}
+
+          cutoff=$(date -u -d "-${KEEP_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v-"${KEEP_HOURS}"H +%Y-%m-%dT%H:%M:%SZ)   # GNU date, else BSD
+
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+
+          failed=0
+          for pkg in $PACKAGES; do
+            echo "== ${pkg}"
+            image="ghcr.io/${ORG}/${pkg}"
+            gh api --paginate "orgs/${ORG}/packages/container/${pkg}/versions?per_page=100" \
+              | jq -s 'add // []' >"$work/versions.json"
+            total=$(jq length "$work/versions.json")
+
+            # Roots (rules 1-3), one digest per line.
+            jq -r --arg re "$PROTECTED_TAGS" --argjson n "$KEEP_RECENT" --arg cutoff "$cutoff" '
+              ( [ .[] | select(any(.metadata.container.tags[]?; test($re))) | .name ]
+              + ( [ .[] | select((.metadata.container.tags | length) > 0) ]
+                  | sort_by(.created_at) | reverse | .[:$n] | map(.name) )
+              + [ .[] | select(.created_at >= $cutoff) | .name ] )
+              | unique | .[]' "$work/versions.json" >"$work/keep"
+            cp "$work/keep" "$work/queue"
+            : >"$work/children"
+
+            # Rule 4: walk every kept manifest down to its children.
+            abort=0
+            missing=0
+            while [[ -s $work/queue ]]; do
+              d=$(head -n1 "$work/queue"); sed -i.bak 1d "$work/queue"
+              if ! raw=$(docker buildx imagetools inspect --raw "${image}@${d}" 2>/dev/null); then
+                if grep -qxF "$d" "$work/children"; then
+                  echo "  warn: ${d} is referenced by a kept index but is gone (already broken)"
+                  missing=$((missing + 1))
+                  continue
+                fi
+                echo "  ERROR: cannot read kept manifest ${d}; deleting nothing in ${pkg}"
+                abort=1
+                break
+              fi
+              for c in $(jq -r '.manifests[]?.digest' <<<"$raw"); do
+                if ! grep -qxF "$c" "$work/keep"; then
+                  echo "$c" >>"$work/keep"; echo "$c" >>"$work/children"; echo "$c" >>"$work/queue"
+                fi
+              done
+            done
+            if ((abort)); then failed=1; continue; fi
+
+            jq -r '.[] | "\(.id) \(.name) \(.created_at) \(.metadata.container.tags | join(","))"' "$work/versions.json" \
+              | while read -r id name created tags; do
+                  grep -qxF "$name" "$work/keep" || echo "$id $name $created ${tags:-untagged}"
+                done >"$work/delete"
+
+            echo "  versions=${total} keep_digests=$(wc -l <"$work/keep" | tr -d ' ') delete=$(wc -l <"$work/delete" | tr -d ' ') missing_children=${missing}"
+            while read -r id name created tags; do
+              if ((DRY_RUN)); then
+                echo "  would delete ${id} ${name:7:12} ${created} ${tags}"
+              else
+                gh api -X DELETE "orgs/${ORG}/packages/container/${pkg}/versions/${id}" >/dev/null
+                echo "  deleted ${id} ${name:7:12} ${created} ${tags}"
+              fi
+            done <"$work/delete"
+          done
+          exit "$failed"
